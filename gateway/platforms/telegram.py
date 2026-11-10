@@ -17,6 +17,7 @@ import html as _html
 import re
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Any
+from gateway.platforms import telegram_x_widget
 
 logger = logging.getLogger(__name__)
 
@@ -515,6 +516,7 @@ class TelegramAdapter(BasePlatformAdapter):
         chat_type: Optional[str] = None,
         thread_id: Optional[str] = None,
         user_name: Optional[str] = None,
+        fail_closed_on_error: bool = False,
     ) -> bool:
         """Return whether a Telegram inline-button caller may perform gated actions."""
         normalized_user_id = str(user_id or "").strip()
@@ -523,6 +525,8 @@ class TelegramAdapter(BasePlatformAdapter):
 
         runner = getattr(getattr(self, "_message_handler", None), "__self__", None)
         auth_fn = getattr(runner, "_is_user_authorized", None)
+        if fail_closed_on_error and not callable(auth_fn):
+            return False
         if callable(auth_fn):
             try:
                 from gateway.session import SessionSource
@@ -543,6 +547,9 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
                 return bool(auth_fn(source))
             except Exception:
+                if fail_closed_on_error:
+                    logger.debug("[Telegram] Callback authorization failed for user %s", normalized_user_id, exc_info=True)
+                    return False
                 logger.debug(
                     "[Telegram] Falling back to env-only callback auth for user %s",
                     normalized_user_id,
@@ -953,7 +960,7 @@ class TelegramAdapter(BasePlatformAdapter):
 
         try:
             await self._app.updater.start_polling(
-                allowed_updates=Update.ALL_TYPES,
+                allowed_updates=telegram_x_widget.allowed_updates(Update),
                 drop_pending_updates=False,
                 error_callback=self._polling_error_callback_ref,
             )
@@ -1080,7 +1087,7 @@ class TelegramAdapter(BasePlatformAdapter):
 
             try:
                 await self._app.updater.start_polling(
-                    allowed_updates=Update.ALL_TYPES,
+                    allowed_updates=telegram_x_widget.allowed_updates(Update),
                     drop_pending_updates=False,
                     error_callback=self._polling_error_callback_ref,
                 )
@@ -1581,6 +1588,10 @@ class TelegramAdapter(BasePlatformAdapter):
             ))
             # Handle inline keyboard button callbacks (update prompts)
             self._app.add_handler(CallbackQueryHandler(self._handle_callback_query))
+            from telegram.ext import TypeHandler
+            async def _x_widget_update(update, context):
+                await telegram_x_widget.handle(self, update, context)
+            self._app.add_handler(TypeHandler(Update, _x_widget_update), group=1)
             
             # Start polling — retry initialize() for transient TLS resets
             try:
@@ -1643,7 +1654,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     url_path=webhook_path,
                     webhook_url=webhook_url,
                     secret_token=webhook_secret,
-                    allowed_updates=Update.ALL_TYPES,
+                    allowed_updates=telegram_x_widget.allowed_updates(Update),
                     drop_pending_updates=True,
                 )
                 self._webhook_mode = True
@@ -1676,7 +1687,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 self._polling_error_callback_ref = _polling_error_callback
 
                 await self._app.updater.start_polling(
-                    allowed_updates=Update.ALL_TYPES,
+                    allowed_updates=telegram_x_widget.allowed_updates(Update),
                     drop_pending_updates=True,
                     error_callback=_polling_error_callback,
                 )
@@ -4973,6 +4984,9 @@ class TelegramAdapter(BasePlatformAdapter):
         msg = self._effective_update_message(update)
         if not msg or not msg.text:
             return
+        if msg.text.split()[0].split('@')[0].lower() == '/xdeck':
+            if await telegram_x_widget.send(self, msg):
+                return
         if not self._should_process_message(msg, is_command=True):
             return
         await self._ensure_forum_commands(msg)
