@@ -1,74 +1,49 @@
-# X Command Deck (experimental)
+# Hermes deck (experimental)
 
-An opt-in, read-only Telegram command deck. This uses experimental `sendWidget`,
-`answerWidgetQuery`, and `widget_query` API extensions and the
-`window.TelegramWidget` client API. Availability is not guaranteed in standard
-Telegram Bot API servers or clients; this feature requires a compatible server
-and client. It uses python-telegram-bot's private `_post` method and relies on
-unknown update fields surviving in `Update.api_kwargs` (tested with the installed
-PTB version). Upgrades may break compatibility. No second poller is started.
+A live Telegram widget for Hermes, built on Bot API 10.4 widgets (`sendWidget`,
+`widget_query`, `answerWidgetQuery`). Send `/xdeck` in a private chat with the bot.
+
+**Agent tab**: refreshes every ~6 s while the widget is on screen.
+- `WORKING`: Hermes is running in this chat. **Stop** sends `/stop`.
+- `YOUR TURN`: a dangerous command is waiting for approval. Shows the command; **Approve** / **Deny** send `/approve` / `/deny`.
+- `IDLE`: nothing needs you.
+- The three most recently active titled sessions (working / done / idle). Tap twice to `/resume` one.
+- The provider's weekly usage window (Codex, Anthropic, or OpenRouter), refreshed every 5 minutes.
+
+**Controls tab**
+- Launchers: tap twice to run a saved prompt with `/background`; the reply lands in chat.
+- Cron: jobs sorted with failures first; **Run** queues the job for the next scheduler tick (this re-enables a paused job, like `hermes cron run`).
+- Ops: `/fast`, `/yolo`, `/restart` (yolo, restart, stop, run, resume and launchers need a second tap).
+
+Every action except cron is sent through the gateway's normal command path as if you had
+typed it, so its reply appears in the chat. The widget can only send the fixed action keys
+listed above; session and job IDs are checked against the database before use.
 
 ## Setup
 
-1. Set up and authorize the Hermes Telegram gateway as usual. In its environment,
-   set `HERMES_TELEGRAM_X_WIDGET=1` and `TELEGRAM_ALLOWED_USERS` to a comma-separated
-   list of explicit numeric Telegram user IDs, e.g. `123456789`. Wildcards and
-   usernames do not grant deck access. The gateway's own authorization must also
-   allow the user. Restart the gateway after changing its environment.
-2. Open a private conversation with the bot as an allowed user and send
-   `/xdeck`. Group, inline, and shared-widget queries are rejected. Disabling the
-   opt-in and restarting turns the feature off.
-3. The bundled `widgets/x-command-deck.html` is used by default. An optional
-   `HERMES_X_WIDGET_HTML` selects an alternate local file. Treat that file as
-   trusted code: the server sends its contents to Telegram. It must fit within
-   32 KiB raw and 4 KiB zlib-compressed.
+1. In the gateway's environment, set `HERMES_TELEGRAM_X_WIDGET=1` and
+   `TELEGRAM_ALLOWED_USERS` to explicit numeric Telegram user IDs. Wildcards and
+   usernames do not grant deck access, and the gateway's own authorization must also
+   allow the user. Restart the gateway.
+2. Optional launchers in `$HERMES_HOME/xdeck.yaml` (up to 6):
 
-## Optional projects and vault
+   ```yaml
+   launchers:
+     - label: Morning brief
+       prompt: Give me my morning brief
+     - label: Inbox
+       prompt: Triage my inbox and list what needs a reply
+   ```
 
-The default project registry is `projects.yaml` under the active Hermes home
-(`HERMES_HOME`/profile); `HERMES_X_WIDGET_PROJECTS` overrides it. Example:
+3. `HERMES_X_WIDGET_HTML` can point at an alternate widget file. Treat it as trusted
+   code; it must fit Telegram's 32 KiB raw / 4 KiB zlib-compressed limit.
 
-```yaml
-projects:
-  sample:
-    name: Sample project
-    status: active
-    obsidian_path: Projects/Sample
-```
+## Limits
 
-Set `HERMES_X_WIDGET_VAULT` to the vault directory. If unset, the deck discovers
-it only when exactly one vault is marked open in `~/.config/obsidian/obsidian.json`.
-For each active project, `Index.md` provides the first unchecked item under a
-`## Workstreams`, `## Next actions`, or `## Next steps` heading. Markdown files
-in `Bugs/` with YAML frontmatter `status: open` provide bug titles. Missing or
-invalid sources are reported, not treated as conclusive absence. Project paths
-must be relative and resolve inside the vault. Other deck cards read profile
-cron counts, today's session/message counts, and host load/disk usage. Missing
-files produce unavailable responses. No project data is required for other cards.
-Registry statuses are case-insensitive and whitespace-normalized: `active` is
-active; `archived`, `inactive`, `paused`, `completed`, and `on hold` are
-inactive (`on-hold` and `on_hold` are also accepted). Malformed entries or
-unrecognized statuses make the registry unavailable. An index without a recognized heading
-is unclassified, whereas a recognized heading with no unchecked items is empty.
-Cron counts distinguish disabled completed jobs from paused jobs; legacy disabled
-jobs without a completed state are counted as paused.
+- Widgets have no keyboard, so anything that needs typing stays in normal chat.
+- Actions always target the main private-chat session, not a DM topic thread.
+- Uses python-telegram-bot's private `Bot._post` and `Update.api_kwargs`, because PTB has
+  no widget types yet; a PTB upgrade can break this.
+- Results (session titles, pending commands, job names) pass through Telegram.
 
-## Privacy and limitations
-
-The bot sends the HTML and requested results through Telegram. Project names,
-next-action text, and bug titles may contain sensitive information; aggregate
-activity, jobs, and host metrics can also reveal private information. Anyone
-with access to an authorized Telegram account or its client can see results.
-Do not enable this for data you cannot share with Telegram or those users.
-Project outputs are truncated; the status card reports disk use for the
-filesystem containing the Hermes home, not the size of the profile.
-
-The feature runs no shell commands and provides no write actions. Database
-access uses SQLite read-only mode; bounded reads and path checks reduce risk,
-but vault checks are not a security sandbox against a local user concurrently
-replacing directories/symlinks. Only use trusted local registry, vault and HTML
-files. Timeouts do not stop already-running background read threads. Security
-assumes authentic updates from Telegram and a secure bot token/webhook; no
-live compatibility or end-to-end security audit is implied by the unit tests.
-
-Run the focused tests with `./scripts/run_tests.sh tests/gateway/test_telegram_x_widget.py`.
+Run the tests with `./scripts/run_tests.sh tests/gateway/test_telegram_x_widget.py`.

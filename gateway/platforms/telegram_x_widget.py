@@ -1,62 +1,32 @@
-"""Opt-in, read-only native Telegram widget for the private command deck.
+"""Opt-in Telegram widget deck: live Hermes agent state plus one-tap controls.
 
-PTB 22.x preserves unrecognized Update fields in api_kwargs. This bridge uses
-that compatibility path, not a second poller or private PTB deserialization.
+Uses Bot API 10.4 widgets (sendWidget / widget_query / answerWidgetQuery).
+PTB 22.x has no widget types yet, so queries arrive via Update.api_kwargs and
+calls go through Bot._post. Every action is a whitelisted slash command fed
+through the gateway's normal message path, so it gets the same handling as a
+typed command; cron "run now" is CLI-only there, so it calls cron.jobs directly.
 """
 import asyncio
 import json
 import os
 import re
-import stat
-
-import yaml
 import sqlite3
+import stat
+import time
 import zlib
-from datetime import datetime
 from contextlib import closing
 from pathlib import Path
 
+import yaml
+
 from hermes_constants import get_hermes_home
 
-
-def _status():
-    import shutil
-    total, used, _ = shutil.disk_usage(get_hermes_home())
-    load = os.getloadavg()[0] if hasattr(os, 'getloadavg') else 0
-    return f'Gateway responding.\nSystem load (1 min): {load:.2f}\nProfile disk used: {used * 100 / total:.0f}%'
+_ID = re.compile(r'[A-Za-z0-9_.-]{1,48}')  # session and cron job ids
+_COMMANDS = {'stop': '/stop', 'approve': '/approve', 'deny': '/deny',
+             'restart': '/restart', 'fast': '/fast', 'yolo': '/yolo'}
+_usage = {'at': 0.0, 'value': None, 'task': None}
 
 
-def _cron():
-    path = get_hermes_home() / 'cron' / 'jobs.json'
-    with path.open('rb') as f:
-        raw = f.read(1024 * 1024 + 1)
-    if len(raw) > 1024 * 1024:
-        raise ValueError('too large')
-    jobs = json.loads(raw)['jobs']
-    if not isinstance(jobs, list) or any(not isinstance(j, dict) for j in jobs):
-        raise ValueError('invalid jobs')
-    if any(type(j.get('enabled', True)) is not bool for j in jobs):
-        raise ValueError('invalid enabled flag')
-    enabled = sum(j.get('enabled', True) is True for j in jobs)
-    completed = sum(j.get('enabled', True) is False and j.get('state') == 'completed' for j in jobs)
-    paused = sum(j.get('enabled', True) is False and j.get('state') != 'completed' for j in jobs)
-    failed = sum(j.get('last_status') in ('error', 'failed') for j in jobs)
-    return f'Cron jobs: {len(jobs)}\nEnabled: {enabled} · paused: {paused} · completed: {completed}\nLast run failed: {failed}\nCounts only; scheduler health is not checked.'
-
-
-def _activity():
-    path = get_hermes_home() / 'state.db'
-    # mode=ro never creates a database. No message text or session titles leave it.
-    uri = path.resolve().as_uri() + '?mode=ro'
-    start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
-    with closing(sqlite3.connect(uri, uri=True, timeout=0.3)) as db:
-        db.set_progress_handler(lambda: 1, 200000)
-        sessions = db.execute('SELECT count(*) FROM sessions WHERE started_at >= ?', (start,)).fetchone()[0]
-        messages = db.execute('SELECT count(*) FROM messages WHERE timestamp >= ?', (start,)).fetchone()[0]
-    return f'Today (local time)\nSessions started: {sessions}\nMessages recorded: {messages}\nCounts across this profile.'
-
-
-# Vault access is strictly read-only.
 def _read(path, limit=262144):
     # Refuse special files (including FIFOs) and symlinks at the leaf.
     fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | getattr(os, 'O_NOFOLLOW', 0))
@@ -69,163 +39,144 @@ def _read(path, limit=262144):
     return data.decode('utf-8')
 
 
-def _registry():
+def _text(value, limit):
+    return ' '.join(str(value).split())[:limit]
+
+
+def _ago(ts):
+    s = max(0, int(time.time() - (ts or 0)))
+    if s < 3600:
+        return f'{s // 60}m'
+    return f'{s // 3600}h {s % 3600 // 60}m' if s < 86400 else f'{s // 86400}d'
+
+
+def _db():
+    uri = (get_hermes_home() / 'state.db').resolve().as_uri() + '?mode=ro'
+    db = sqlite3.connect(uri, uri=True, timeout=0.3)
+    db.set_progress_handler(lambda: 1, 200000)
+    return closing(db)
+
+
+def _sessions(running_ids):
+    """Three most recently active titled sessions (titles are what /resume takes)."""
+    with _db() as db:
+        rows = db.execute(
+            'SELECT id, title, ended_at, coalesce((SELECT max(timestamp) FROM messages m'
+            ' WHERE m.session_id = s.id), started_at) AS seen FROM sessions s'
+            " WHERE coalesce(title, '') != '' ORDER BY started_at DESC LIMIT 20").fetchall()
+        billing = db.execute(
+            'SELECT billing_provider, billing_base_url FROM sessions WHERE billing_provider'
+            ' IS NOT NULL ORDER BY started_at DESC LIMIT 1').fetchone()
+    rows.sort(key=lambda r: r[3] or 0, reverse=True)
+    out = [[sid, _text(title, 28), 'w' if sid in running_ids else 'd' if ended else 'i', _ago(seen)]
+           for sid, title, ended, seen in rows[:3]]
+    return out, billing
+
+
+def _title(session_id):
+    with _db() as db:
+        row = db.execute('SELECT title FROM sessions WHERE id = ?', (session_id,)).fetchone()
+    return _text(row[0], 200) if row and row[0] else None
+
+
+def _refresh_usage(billing):
+    from agent.account_usage import fetch_account_usage
+    snap = fetch_account_usage(billing[0], base_url=billing[1]) if billing else None
+    windows = [w for w in (snap.windows if snap else ()) if w.used_percent is not None]
+    w = next((w for w in windows if 'week' in w.label.lower()), windows[0] if windows else None)
+    _usage['value'] = w and [_text(f'{snap.provider} · {w.label}', 24), round(w.used_percent),
+                             w.reset_at.astimezone().strftime('%a %H:%M') if w.reset_at else '']
+
+
+def _usage_value(billing):
+    # Provider usage APIs are slow; refresh at most every 5 minutes off the request path.
+    if time.time() - _usage['at'] > 300 and not (_usage['task'] and not _usage['task'].done()):
+        _usage['at'] = time.time()
+        _usage['task'] = asyncio.ensure_future(asyncio.to_thread(_refresh_usage, billing))
+    return _usage['value']
+
+
+def _launchers():
     try:
-        registry = os.getenv('HERMES_X_WIDGET_PROJECTS')
-        path = Path(registry).expanduser() if registry else get_hermes_home() / 'projects.yaml'
-        obj = yaml.safe_load(_read(path))
-        projects = obj['projects']
-        if not isinstance(projects, dict) or len(projects) > 500:
-            raise ValueError('invalid registry')
-        if any(not isinstance(p, dict) or not isinstance(p.get('status'), str)
-               or not p['status'].strip() for p in projects.values()):
-            raise ValueError('invalid project entry')
-        active = []
-        for key, p in projects.items():
-            status = ' '.join(p['status'].strip().lower().replace('_', ' ').replace('-', ' ').split())
-            if status == 'active':
-                active.append((str(p.get('name') or key), p.get('obsidian_path')))
-            elif status not in {'archived', 'inactive', 'paused', 'completed', 'on hold'}:
-                raise ValueError('unrecognized project status')
-        return active
+        items = yaml.safe_load(_read(get_hermes_home() / 'xdeck.yaml', 65536))['launchers']
+        return [(_text(i['label'], 18), _text(i['prompt'], 2000)) for i in items[:6]
+                if isinstance(i, dict) and i.get('label') and i.get('prompt')]
     except (OSError, ValueError, TypeError, KeyError, yaml.YAMLError):
-        return None
+        return []
 
 
-def _vault():
-    configured = os.getenv('HERMES_X_WIDGET_VAULT')
-    if configured:
-        return Path(configured).expanduser().resolve()
-    try:
-        config = json.loads(_read(Path.home() / '.config/obsidian/obsidian.json', 65536))
-        opened = [v['path'] for v in config['vaults'].values() if v.get('open') is True]
-        return Path(opened[0]).resolve() if len(opened) == 1 else None
-    except (OSError, ValueError, TypeError, KeyError):
-        return None
+def _fit(payload, key):
+    # answerWidgetQuery data is at most 1024 UTF-8 bytes: drop list items until it fits.
+    while len(json.dumps(payload, ensure_ascii=False).encode('utf-8')) > 1024 and payload[key]:
+        payload[key].pop()
+    return payload
 
 
-def _safe_text(value):
-    return ' '.join(str(value).split())[:180]
+def _controls():
+    from cron.jobs import load_jobs
+    jobs = sorted(load_jobs(), key=lambda j: (j.get('last_status') not in ('error', 'failed'),
+                                             j.get('enabled', True) is False, str(j.get('name'))))
+    status = lambda j: 'e' if j.get('last_status') in ('error', 'failed') else 'o' if j.get('enabled', True) else 'p'
+    return _fit({'l': [label for label, _ in _launchers()],
+                 'j': [[j['id'], _text(j.get('name') or j['id'], 22), status(j)]
+                       for j in jobs if isinstance(j.get('id'), str) and _ID.fullmatch(j['id'])]}, 'j')
 
 
-def _projects():
-    projects = _registry()
-    if projects is None:
-        return 'Project registry unavailable.'
-    if not projects:
-        return 'No active projects.'
-    result = 'Active projects:'
-    items = ['\n- ' + _safe_text(name) for name, _ in projects]
-    if len((result + ''.join(items)).encode('utf-8')) <= 1024:
-        return result + ''.join(items)
-    for index, item in enumerate(items):
-        marker = f'\n... {len(items) - index} more not shown.'
-        next_marker = f'\n... {len(items) - index - 1} more not shown.'
-        if len((result + item + next_marker).encode('utf-8')) > 1024:
-            return result + marker
-        result += item
-    return result
+def _run_job(job_id):
+    from cron.jobs import load_jobs, trigger_job
+    job = next((j for j in load_jobs() if j.get('id') == job_id), None)
+    if not job or not trigger_job(job_id):
+        return 'Job not found.'
+    return 'Queued ' + _text(job.get('name') or job_id, 40)
 
 
-def _project_dir(vault, relative):
-    if not isinstance(relative, str) or not relative or Path(relative).is_absolute():
-        return None
-    path = (vault / relative).resolve()
-    return path if path != vault and path.is_relative_to(vault) else None
+def _runner(adapter):
+    return getattr(getattr(adapter, '_message_handler', None), '__self__', None)
 
 
-def _collect(kind):
-    projects = _registry()
-    if projects is None:
-        return 'Project registry unavailable.'
-    if not projects:
-        return 'No active projects.'
-    vault = _vault()
-    if vault is None or not vault.is_dir():
-        return 'Project vault unavailable.'
-    lines, missing = [], 0
-    for name, relative in projects:
-        try:
-            directory = _project_dir(vault, relative)
-            if directory is None:
-                raise ValueError('invalid project path')
-            if kind == 'next':
-                text = _read(directory / 'Index.md')
-                in_workstreams = False
-                found_heading = False
-                for line in text.splitlines():
-                    heading = re.match(r'^##\s+(.+?)\s*$', line)
-                    if heading:
-                        in_workstreams = heading.group(1).lower() in ('workstreams', 'next actions', 'next steps')
-                        found_heading = found_heading or in_workstreams
-                    match = re.match(r'^\s*[-*]\s+\[ \]\s+(.+)', line)
-                    if in_workstreams and match:
-                        lines.append(f'{_safe_text(name)}: {_safe_text(match.group(1))}')
-                        break
-                if not found_heading:
-                    missing += 1
-            else:
-                bugs = directory / 'Bugs'
-                if not bugs.resolve().is_relative_to(directory) or not bugs.is_dir():
-                    raise ValueError('missing bugs')
-                entries = []
-                with os.scandir(bugs) as scan:
-                    for entry in scan:
-                        if len(entries) >= 200:
-                            raise ValueError('too many bugs')
-                        entries.append(entry.name)
-                for entry in sorted(entries):
-                    if not entry.endswith('.md'):
-                        continue
-                    try:
-                        text = _read(bugs / entry, 65536)
-                        parts = text.split('---', 2)
-                        if len(parts) < 3 or parts[0].strip():
-                            raise ValueError('invalid frontmatter')
-                        meta = yaml.safe_load(parts[1])
-                        if not isinstance(meta, dict) or not isinstance(meta.get('status'), str):
-                            raise ValueError('invalid status')
-                        status = meta['status'].strip().lower().replace('_', ' ').replace('-', ' ')
-                        status = ' '.join(status.split())
-                        if status in {'open', 'in progress', 'reopened', 'new'}:
-                            title = re.search(r'^#\s+(.+)$', parts[2], re.MULTILINE)
-                            lines.append(f'{_safe_text(name)}: {_safe_text(title.group(1) if title else entry[:-3])}')
-                        elif status not in {'closed', 'resolved', 'fixed', 'done', 'duplicate', 'wontfix', "won't fix", 'wont fix'}:
-                            missing += 1
-                    except (OSError, ValueError, TypeError, yaml.YAMLError):
-                        missing += 1
-        except (OSError, ValueError, TypeError, yaml.YAMLError):
-            missing += 1
-    header = 'Next workstreams:' if kind == 'next' else 'Open bugs:'
-    empty = 'No next workstreams found.' if kind == 'next' else 'No open bugs found.'
-    result = header if lines else (empty if not missing else 'No results found in available sources.')
-    if missing:
-        result += f'\nSources unavailable or unclassified: {missing}.'
-    for index, line in enumerate(lines):
-        item = '\n- ' + line
-        # Reserve space for an explicit truncation marker.
-        if len((result + item).encode('utf-8')) > 980:
-            result += f'\n... {len(lines) - index} more not shown.'
-            break
-        result += item
-    return _bounded(result)
+def _source(adapter, user, chat):
+    return adapter.build_source(chat_id=str(chat['id']), chat_type='dm', user_id=str(user['id']),
+                                user_name=user.get('first_name'))
 
 
-def _next():
-    return _collect('next')
+async def _state(adapter, user, chat):
+    from tools import approval
+    runner = _runner(adapter)
+    agents = getattr(runner, '_running_agents', None) or {}
+    key = runner._session_key_for_source(_source(adapter, user, chat))
+    with approval._lock:
+        queue = list(approval._gateway_queues.get(key) or ())
+    rows, billing = await asyncio.to_thread(_sessions, {getattr(a, 'session_id', None) for a in agents.values()})
+    command = _text(queue[0].data.get('command', ''), 160) if queue else ''
+    return {'s': 't' if queue else 'w' if key in agents else 'i', 'c': command, 'n': len(queue),
+            'y': int(approval.is_session_yolo_enabled(key)), 'l': rows, 'u': _usage_value(billing)}
 
 
-def _bugs():
-    return _collect('bugs')
-
-
-_ACTIONS = {'x:status': _status, 'x:cron': _cron, 'x:activity': _activity,
-            'x:projects': _projects, 'x:next': _next, 'x:bugs': _bugs,
-            'x:help': lambda: 'Read-only deck. Counts are profile-local. No shell commands or changes.'}
-
-def _bounded(text):
-    # Telegram answerWidgetQuery data is at most 1024 UTF-8 bytes.
-    return text.encode('utf-8')[:1024].decode('utf-8', 'ignore')
+async def _answer(adapter, user, chat, data):
+    if data == 'a':
+        return await _state(adapter, user, chat)
+    if data == 'c':
+        return await asyncio.to_thread(_controls)
+    kind, _, arg = data.partition(':')
+    if kind == 'k' and arg in _COMMANDS:
+        command = _COMMANDS[arg]
+    elif kind == 'r' and _ID.fullmatch(arg):
+        title = await asyncio.to_thread(_title, arg)
+        command = title and '/resume ' + title
+    elif kind == 'l' and re.fullmatch(r'[0-5]', arg):
+        items = _launchers()
+        command = int(arg) < len(items) and '/background ' + items[int(arg)][1]
+    elif kind == 'j' and _ID.fullmatch(arg):
+        return {'t': await asyncio.to_thread(_run_job, arg)}
+    else:
+        return {'t': 'Unknown action.'}
+    if not command:
+        return {'t': 'No longer available.'}
+    from gateway.platforms.base import MessageEvent, MessageType
+    # shortcut: always targets the main DM session, not a DM topic thread; add thread_id if topics matter.
+    await adapter.handle_message(MessageEvent(text=command, message_type=MessageType.COMMAND,
+                                              source=_source(adapter, user, chat)))
+    return {'t': 'Sent ' + command.split()[0]}
 
 
 def enabled():
@@ -291,16 +242,19 @@ async def handle(adapter, update, context):
              and type(msgid) is int and msgid > 0 and not query.get('inline_message_id')
              and not query.get('widget_id'))
     if not valid:
-        response = 'Not authorized.'
-    elif not isinstance(data, str) or data not in _ACTIONS:
-        response = 'Unknown action.'
+        response = {'t': 'Not authorized.'}
+    elif not isinstance(data, str) or len(data) > 64:
+        response = {'t': 'Unknown action.'}
     else:
         try:
-            response = await asyncio.wait_for(asyncio.to_thread(_ACTIONS[data]), timeout=2)
+            response = await asyncio.wait_for(_answer(adapter, user, chat, data), timeout=8)
         except Exception:
-            response = 'This information is temporarily unavailable.'
+            response = {'t': 'Temporarily unavailable.'}
+    text = json.dumps(response, ensure_ascii=False)
+    if len(text.encode('utf-8')) > 1024:
+        text = '{"t":"Response too large."}'
     try:
-        await asyncio.wait_for(adapter._bot._post('answerWidgetQuery', {'widget_query_id': qid, 'data': _bounded(response)}), timeout=5)
+        await asyncio.wait_for(adapter._bot._post('answerWidgetQuery', {'widget_query_id': qid, 'data': text}), timeout=5)
     except Exception:
         # Queries expire quickly; never log a raw URL or token.
         pass
