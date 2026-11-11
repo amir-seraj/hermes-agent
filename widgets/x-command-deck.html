@@ -1,81 +1,78 @@
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Hermes deck</title><style>
-:root{--bg:#0c0c0c;--ln:#2e2e2e;--fg:#ededed;--mu:#8c8c8c;--dm:#1f1f1f;--ac:#ff8a2b;--ok:#b9d76c;--er:#ff5d52}
-@media(prefers-color-scheme:light){:root{--bg:#f4eddd;--ln:#d8cdb6;--fg:#29241e;--mu:#7d7465;--dm:#e6dcc8;--ac:#e0761a;--ok:#5b7d1f;--er:#c23a2b}}
-*{box-sizing:border-box;margin:0}[hidden]{display:none!important}
-body{background:var(--bg);color:var(--fg);font:12px ui-monospace,Menlo,Consolas,monospace;padding:6px}
-.c{border:1px solid var(--ln);padding:12px;position:relative}
-.c:before,.c:after{content:'';position:absolute;width:7px;height:7px;border:0 solid var(--mu)}
-.c:before{top:-1px;left:-1px;border-width:1px 0 0 1px}.c:after{bottom:-1px;right:-1px;border-width:0 1px 1px 0}
-.h,.r,.k,.t{display:flex;justify-content:space-between;align-items:center;gap:6px}
-.h{color:var(--mu);font-size:10px;letter-spacing:.1em;margin-bottom:4px}.h b{color:var(--fg);font-size:13px;letter-spacing:.04em}
-canvas{display:block;margin:8px auto 0}
-.p{color:var(--mu);text-align:center;margin:10px 0 2px;min-height:14px;overflow-wrap:anywhere}.p i{color:var(--ac);font-style:normal}
-button{font:inherit;font-weight:700;letter-spacing:.08em;color:var(--fg);background:none;border:1px solid var(--ln);padding:8px 6px;flex:1;cursor:pointer}
-button.a{background:var(--ac);border-color:var(--ac);color:var(--bg)}button.s{flex:0;padding:3px 8px;font-size:10px}
-.k{margin:8px 0}.r{padding:6px 0;border-top:1px solid var(--ln);cursor:pointer}.r span:first-child{overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
-.r span:first-child:before{content:'■ ';color:var(--q)}.r span+span{color:var(--q);white-space:nowrap}
-.g{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin:6px 0 12px}
-.u{color:var(--mu);font-size:10px;margin-top:10px}.b{display:flex;gap:2px;margin-top:5px}.b i{flex:1;height:7px;background:var(--dm)}.b i.on{background:var(--ac)}
-.t{margin-top:10px}.t button{border-width:0 0 2px;color:var(--mu)}.t button.on{color:var(--fg);border-color:var(--ac)}
-.arm{outline:1px solid var(--ac);outline-offset:-1px}.n{color:var(--mu);font-size:10px;text-align:center;margin-top:8px;min-height:13px}
-</style></head><body><main class="c">
-<div class="h"><b>HERMES</b><span id="clock"></span></div>
-<section id="A"><canvas id="face"></canvas><canvas id="word"></canvas><p class="p" id="p"></p>
-<div class="k" id="act"></div><div id="rows"></div>
-<div id="use" hidden><div class="h u"><span id="ul"></span><span id="ur"></span></div><div class="b" id="bar"></div></div></section>
-<section id="C" hidden><div class="h">LAUNCH</div><div class="g" id="launch"></div>
-<div class="h"><span>CRON</span><span><button class="s" id="pv">‹</button> <span id="pg"></span> <button class="s" id="nx">›</button></span></div><div id="jobs"></div>
-<div class="h" style="margin-top:12px">OPS</div><div class="k"><button data-k="k:fast">FAST</button><button data-k="k:yolo" data-c="1" id="yolo">YOLO</button><button data-k="k:restart" data-c="1">RESTART</button></div></section>
-<p class="n" id="note"></p>
-<nav class="t"><button class="on" data-tab="A">AGENT</button><button data-tab="C">CONTROLS</button></nav>
-</main><script>
-(function(){
-var W=window.TelegramWidget,$=function(i){return document.getElementById(i)},S={s:'i',l:[],c:'',n:0,y:0,u:null},C=null,busy=0,queued=null,armed=null,page=0,tick=0,G={},
-GL='WhhhlllaOehhhhheRuhhukihKhikokihIe44444eNhpljhhhGehgnhhfYhha4444UhhhhhheTv444444DuhhhhhuLggggggvEvgguggvFvgguggg',
-WORD={w:'WORKING',t:'YOUR TURN',i:'IDLE',o:'OFFLINE'},ROW={w:['working','--ac'],d:['done','--ok'],i:['idle','--mu']};
-for(var i=0;i<GL.length;i+=8)G[GL[i]]=GL.substr(i+1,7);
-var live=W&&!W.isPreview;
-function css(v){return getComputedStyle(document.body).getPropertyValue(v).trim()||'#888'}
-function el(t,c,x,p){var e=document.createElement(t);if(c)e.className=c;if(x!=null)e.textContent=x;p&&p.appendChild(e);return e}
-function grid(cv,w,h,P,f){var r=window.devicePixelRatio||2,x=cv.getContext('2d'),by={};cv.width=w*P*r;cv.height=h*P*r;cv.style.width=w*P+'px';cv.style.height=h*P+'px';x.scale(r,r);
- for(var y=0;y<h;y++)for(var X=0;X<w;X++){var k=f(X,y)||'--dm';(by[k]=by[k]||[]).push(X,y)}
- var d=P>5?P-2:P-1;for(k in by){x.fillStyle=css(k);for(var j=0;j<by[k].length;j+=2)x.fillRect(by[k][j]*P,by[k][j+1]*P,d,d)}}
-function face(){var s=S.s,o=s=='w'?[-2,-1,0,1,2,1,0,-1][tick%8]:0,blink=s!='i'&&tick%13==0;
- grid($('face'),32,15,6,function(x,y){var dx=(x-15.5)/13,dy=(y-7)/7;if(Math.abs(dx*dx*dx)+Math.abs(dy*dy*dy)>1)return;
-  var ex=x-o,eye=(ex>=10&&ex<=12||ex>=19&&ex<=21);
-  if(s=='i'||s=='o'||blink)return eye&&y==8?'--bg':'--mu';
-  if(eye&&y>=5&&y<=8)return s=='t'?'--ac':'--bg';return '--mu'})}
-function word(){var t=WORD[S.s];grid($('word'),t.length*6+1,7,Math.max(3,Math.min(5,(document.body.clientWidth-40)/(t.length*6+1)|0)),function(x,y){var c=x/6|0,g=G[t[c]];if(x==t.length*6)return y==6?'--ac':0;
- return g&&x%6<5&&(parseInt(g[y],32)>>(4-x%6))&1?'--fg':0})}
-function btn(p,label,k,cls,confirm){var b=el('button',cls,label,p);b.dataset.k=k;if(confirm)b.dataset.c=1;return b}
-function drawA(){word();face();var p=$('p'),a=$('act');p.textContent='';a.textContent='';
- if(S.s=='t'){el('span',0,'Approve ',p);el('i',0,S.c,p);if(S.n>1)el('span',0,' +'+(S.n-1)+' more',p);btn(a,'APPROVE','k:approve','a');btn(a,'DENY','k:deny')}
- else if(S.s=='w'){p.textContent='Hermes is working in this chat.';btn(a,'STOP','k:stop','',1)}
- else p.textContent=S.s=='o'?'No connection to Hermes.':'Nothing needs you.';
- var R=$('rows');R.textContent='';S.l.forEach(function(r){var d=el('div','r',null,R),st=ROW[r[2]]||ROW.i;d.style.setProperty('--q','var('+st[1]+')');
-  d.dataset.k='r:'+r[0];d.dataset.c=1;el('span',0,r[1],d);el('span',0,st[0]+' '+r[3]+(r[2]=='d'?' ago':''),d)});
- $('use').hidden=!S.u;if(S.u){$('ul').textContent=S.u[0]+' '+S.u[1]+'%';$('ur').textContent=S.u[2]?'resets '+S.u[2]:'';
-  var b=$('bar');b.textContent='';for(var i=0;i<30;i++)el('i',i<S.u[1]*.3?'on':'',null,b)}}
-function drawC(){if(!C)return;var L=$('launch'),J=$('jobs'),n=Math.max(1,Math.ceil(C.j.length/4));L.textContent='';J.textContent='';
- C.l.forEach(function(x,i){btn(L,x,'l:'+i,'',1)});if(!C.l.length)el('span','n','Add launchers in ~/.hermes/xdeck.yaml',L);
- page=Math.min(page,n-1);$('pg').textContent=(page+1)+'/'+n;C.j.slice(page*4,page*4+4).forEach(function(j){var d=el('div','r',null,J);
-  d.style.setProperty('--q','var('+({e:'--er',o:'--ok',p:'--mu'})[j[2]]+')');el('span',0,j[1],d);btn(d,'RUN','j:'+j[0],'s',1)});
- $('yolo').textContent=S.y?'YOLO ON':'YOLO'}
-function note(t){$('note').textContent=t||''}
-function ask(k){if(!live)return note(k.length>1?'Preview only — open in Telegram.':'');if(busy){if(k.length>1)queued=k;return}busy=1;
- W.request(k).then(function(a){var d={};try{d=JSON.parse(a.result)}catch(e){}if(k=='a'){S=d.s?d:S;drawA()}else if(k=='c'){C=d.j?d:C;drawC()}else{note(d.t);setTimeout(function(){ask('a');$('C').hidden||ask('c')},600)}},
-  function(e){var c=(e&&e.code)||'FAILED';if(k.length>1)note(c);else if(c=='TIMEOUT'||c=='FAILED'){S.s='o';drawA()}}).then(function(){busy=0;var q=queued;queued=null;q&&ask(q)})}
-function disarm(){if(armed){armed.classList.remove('arm');armed=null;note()}}
-document.addEventListener('click',function(e){var b=e.target.closest('[data-k],[data-tab]');if(!b)return;
- if(b.dataset.tab){disarm();document.querySelectorAll('[data-tab]').forEach(function(t){t.className=t==b?'on':''});$('A').hidden=b.dataset.tab!='A';$('C').hidden=b.dataset.tab!='C';b.dataset.tab=='C'&&ask('c');return}
- if(b.dataset.c&&armed!=b){disarm();armed=b;b.classList.add('arm');note('Tap again to confirm');setTimeout(function(){armed==b&&disarm()},3000);return}
- disarm();W&&W.HapticFeedback&&W.HapticFeedback.impactOccurred('light');ask(b.dataset.k)});
-$('pv').onclick=function(e){e.stopPropagation();page=Math.max(0,page-1);drawC()};$('nx').onclick=function(e){e.stopPropagation();page++;drawC()};
-function clock(){var d=new Date();$('clock').textContent=d.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})+'  '+d.toLocaleDateString([],{weekday:'short',day:'numeric',month:'short'}).toUpperCase()}
-clock();drawA();drawC();ask('a');
-setInterval(clock,20000);setInterval(function(){tick++;if(S.s=='w'||tick%13<2)face()},450);
-setInterval(function(){if(!W||W.isActive)ask('a')},6000);
-W&&W.onEvent&&(W.onEvent('activated',function(){ask('a')}),W.onEvent('themeChanged',function(){drawA()}));
-W&&W.ready&&W.ready()})();
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>
+:root{--bg:#151011;--s2:#241a19;--s3:#33241f;--ln:#3a2a26;--fg:#f1e6cf;--mu:#a8968a;--ac:#ee6a57;--btn:#b5352a;--bt:#f8eedd;--nd:#c7a96b;--ok:#7bc96f;--er:#ef5350}
+@media(prefers-color-scheme:light){:root{--bg:#faf5ec;--s2:#f1e8da;--s3:#e6d9c6;--ln:#e2d5c1;--fg:#2a1715;--mu:#6f5d52;--ac:#b8321f;--btn:#b8321f;--bt:#fff8ee;--nd:#7d5f1c;--ok:#336b2b;--er:#c62828}}
+*{box-sizing:border-box;margin:0;padding:0;font:inherit;color:inherit}[hidden]{display:none!important}
+body{background:var(--bg);color:var(--fg);font:15px/1.35 system-ui,-apple-system,sans-serif;padding:14px}
+button{background:none;border:0;cursor:pointer;text-align:left}
+header,.hd,.r2,.it,.lb,.uh{display:flex;align-items:center;gap:10px}header,.lb,.uh{justify-content:space-between}
+.br{display:flex;gap:7px;align-items:center;font-weight:600}.br svg{width:12px;height:15px;fill:var(--ac)}
+.sg{display:flex;background:var(--s2);border-radius:9px;padding:2px}.sg button{font-size:13px;font-weight:600;color:var(--mu);padding:0 13px;min-height:32px;border-radius:7px}.sg .on{background:var(--s3);color:var(--fg)}
+main{animation:f .2s ease-out}#st{margin:22px 0 4px}
+.hd{font-size:21px;font-weight:650}
+.d{width:10px;height:10px;border-radius:50%;background:var(--q);flex:none;position:relative}.p:after{content:'';position:absolute;inset:0;border-radius:50%;background:inherit;animation:p 1.8s cubic-bezier(.16,1,.3,1) infinite}
+.sb{color:var(--mu);font-size:13px;margin:3px 0 0 20px}
+.cm{font:13px/1.45 ui-monospace,Menlo,monospace;background:var(--s2);border-radius:12px;padding:10px 12px;margin-top:14px;max-height:66px;overflow:hidden;overflow-wrap:anywhere}
+.r2{gap:8px;margin-top:10px}.b{flex:1;min-height:44px;border-radius:12px;background:var(--s2);font-weight:600;text-align:center}.pr{background:var(--btn);color:var(--bt)}.dn{color:var(--er)}.sm .b{font-size:13px}
+.lb{font-size:13px;font-weight:600;color:var(--mu);margin:22px 4px 6px}.lb button{min-width:32px;min-height:28px;text-align:center}
+.gp{background:var(--s2);border-radius:14px;overflow:hidden}
+.it{width:100%;min-height:46px;padding:6px 12px;position:relative}.it+.it:before{content:'';position:absolute;top:0;left:30px;right:0;border-top:1px solid var(--ln)}
+.t{flex:1;min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}.m{font-size:13px;color:var(--mu);font-variant-numeric:tabular-nums;white-space:nowrap}.e{display:block;font-size:12px;color:var(--q)}
+.g{width:8px;height:8px;border-radius:50%;background:var(--q);flex:none;position:relative}.h{background:none;box-shadow:inset 0 0 0 1.5px var(--q)}.k{width:8px;font-size:12px;font-weight:700;color:var(--ok);flex:none}
+.gc{display:grid;grid-template-columns:1fr 1fr;gap:8px}.ch{display:flex;align-items:center;gap:8px;padding:0 12px;text-align:left;min-width:0}.ch .m{color:var(--fg);font-size:15px}.rn{color:var(--ac);font-size:13px;font-weight:600;min-height:40px}.arm{background:var(--s3)}.arm .m,.arm.rn{color:var(--ac)}
+#use{margin-top:20px;font-size:13px}.br2{height:4px;border-radius:2px;background:var(--s2);margin:7px 0 5px;overflow:hidden}.br2 i{display:block;height:100%;background:var(--nd)}
+.c{font-size:12px;color:var(--mu)}.sk{height:12px;border-radius:6px;background:var(--s3);margin:17px 12px;width:60%}
+#n{font-size:13px;color:var(--mu);text-align:center;min-height:18px;margin-top:12px}
+@keyframes p{to{transform:scale(2.6);opacity:0}}@keyframes f{from{opacity:0}}@media(prefers-reduced-motion:reduce){*{animation:none!important}}
+</style></head><body>
+<header><div class="br"><svg viewBox="0 0 12 15" aria-hidden="true"><path d="M6 0l6 8.5L6 15 0 8.5z"/></svg>Ares</div><nav class="sg"><button class="on" data-v="N">Now</button><button data-v="C">Controls</button></nav></header>
+<main id="N"><div id="st"></div><div class="lb">Recent</div><div class="gp" id="rows"></div>
+<div id="use" hidden><div class="uh"><span id="ul"></span><span id="up"></span></div><div class="br2"><i id="ub"></i></div><div class="c" id="ur"></div></div></main>
+<main id="C" hidden><div class="lb">Run</div><div class="gp" id="ln"></div>
+<div class="lb">Scheduled<span id="pgr"><button id="pv" aria-label="Previous">‹</button><span id="pg"></span><button id="nx" aria-label="Next">›</button></span></div><div class="gp" id="jb"></div>
+<div class="lb">Gateway</div><div class="r2 sm"><button class="b" data-k="k:fast">Fast mode</button><button class="b" id="yo" data-k="k:yolo" data-c="Tap again">YOLO: off</button><button class="b dn" data-k="k:restart" data-c="Tap again">Restart</button></div></main>
+<p id="n" role="status" aria-live="polite"></p>
+<script>
+(()=>{
+var W=window.TelegramWidget,$=i=>{return document.getElementById(i)},live=W&&!W.isPreview,S=null,C=null,busy=0,queued=null,armed=null,page=0,nt,
+H={w:['Working','--ac',1],t:['Needs your approval','--nd'],i:['All quiet','--mu'],o:['Can’t reach Ares','--er']},
+TG='Open this message in Telegram to use it.';
+function el(t,c,x,p){var e=document.createElement(t);if(c)e.className=c;if(x)e.textContent=x;p&&p.appendChild(e);return e}
+function q(e,v){e.style.setProperty('--q','var('+v+')');return e}
+function btn(p,x,k,c,cf){var b=el('button',c,x,p);b.dataset.k=k;if(cf)b.dataset.c=cf;return b}
+function glyph(p,s){s=='d'?el('span','k','✓',p):q(el('i',s=='w'?'g p':s=='i'?'g h':'g',null,p),s=='w'?'--ac':s=='e'?'--er':s=='o'?'--ok':'--mu')}
+function drawN(){var s=$('st'),R=$('rows'),h,k,w,r;s.textContent=R.textContent='';
+ function hd(t,c,p,sub){var d=el('div','hd',0,s);q(el('i','d'+(p?' p':''),0,d),c);el('h1',0,t,d);el('p','sb',sub,s)}
+ if(!live)hd('Preview','--mu',0,TG);else if(!S)hd('Connecting…','--mu',1,'Checking on Ares');
+ if(!S){for(r=0;r<3;r++)el('div','sk',0,R);$('use').hidden=1;return}
+ k=S.s;h=H[k];w=S.l.filter(r=>{return r[2]=='w'})[0];
+ hd(h[0],h[1],h[2],k=='t'?(S.n>1?S.n+' commands waiting':'1 command waiting'):k=='w'?(w?w[1]:'In this chat'):k=='o'?'Showing the last known state. Retrying…':S.l[0]?'Last active '+S.l[0][3]+' ago':'No sessions yet');
+ if(k=='t'){el('div','cm',S.c,s);r=el('div','r2',0,s);btn(r,'Approve','k:approve','b pr');btn(r,'Deny','k:deny','b')}
+ if(k=='w')btn(el('div','r2',0,s),'Stop run','k:stop','b dn','Tap again to stop');
+ if(!S.l.length)el('div','it c','No sessions yet. Start one in chat.',R);
+ S.l.forEach(r=>{var b=btn(R,'','r:'+r[0],'it','Resume?');glyph(b,r[2]);el('span','t',r[1],b);el('span','m',r[2]=='w'?'Working':r[3],b)});
+ $('use').hidden=!S.u;if(S.u){$('ul').textContent=S.u[0];$('up').textContent=S.u[1]+'%';$('ub').style.width=Math.min(100,S.u[1])+'%';$('ur').textContent=S.u[2]?'Resets '+S.u[2]:''}
+ $('yo').textContent='YOLO: '+(S.y?'on':'off')}
+function drawC(){var L=$('ln'),J=$('jb'),n,d,t;L.textContent=J.textContent='';
+ if(!C){el('div','sk',0,L);el('div','sk',0,J);$('pgr').hidden=1;return}
+ L.className=C.l.length?'gc':'gp';C.l.forEach((x,i)=>{var b=btn(L,'','l:'+i,'b ch','Tap again');el('span','k','▶',b).style.color='var(--ac)';el('span','t m',x,b)});
+ if(!C.l.length){d=el('div','it',0,L);t=el('span','t','No routines yet',d);el('span','e','Add them to ~/.hermes/xdeck.yaml',t).style.color='var(--mu)'}
+ n=Math.max(1,Math.ceil(C.j.length/3));page=Math.min(page,n-1);$('pgr').hidden=n<2;$('pg').textContent=(page+1)+' of '+n;
+ if(!C.j.length)el('div','it c','No scheduled jobs.',J);
+ C.j.slice(page*3,page*3+3).forEach(j=>{d=el('div','it',0,J);glyph(d,j[2]);t=el('span','t',j[1],d);
+  if(j[2]!='o')q(el('span','e',j[2]=='e'?'Last run failed':'Paused',t),j[2]=='e'?'--er':'--mu');btn(d,'Run','j:'+j[0],'rn','Run now?')})}
+function note(x){$('n').textContent=x||'';clearTimeout(nt);if(x)nt=setTimeout(note,4000)}
+function hap(t){W?.HapticFeedback?.notificationOccurred(t)}
+function ask(k){var act=k.length>1;if(!live){act&&note(TG);return}if(busy){if(act)queued=k;return}busy=1;
+ W.request(k).then(a=>{var d={};try{d=JSON.parse(a.result)}catch(e){}
+  if(k=='a'){if(d.s)S=d;armed||drawN()}else if(k=='c'){if(d.j)C=d;armed||drawC()}else{note(d.t);hap('success');setTimeout(()=>{ask('a');$('C').hidden||ask('c')},700)}},
+ e=>{var c=e&&e.code;if(act){note(c=='TIMEOUT'?'Ares didn’t answer in time.':/RATE|BUSY/.test(c)?'Too many taps. Try again in a moment.':'Couldn’t reach Ares.');hap('error')}else if(S&&(c=='TIMEOUT'||c=='FAILED')){S.s='o';armed||drawN()}}).then(()=>{busy=0;var x=queued;queued=null;x&&ask(x)})}
+function disarm(){if(armed){armed=null;drawN();drawC()}}
+document.addEventListener('click',e=>{var b=e.target.closest('[data-k],[data-v]'),m;if(!b)return;
+ if(b.dataset.v){disarm();document.querySelectorAll('[data-v]').forEach(x=>{x.className=x==b?'on':''});$('N').hidden=b.dataset.v!='N';$('C').hidden=b.dataset.v!='C';b.dataset.v=='C'&&ask('c');return}
+ if(b.dataset.c&&armed!=b){disarm();armed=b;b.classList.add('arm');m=b.querySelector('.m')||b;m.textContent=b.dataset.c;setTimeout(()=>{armed==b&&disarm()},3000);return}
+ armed=null;W?.HapticFeedback?.impactOccurred('light');ask(b.dataset.k);drawN();drawC()});
+$('pv').onclick=()=>{page=Math.max(0,page-1);drawC()};$('nx').onclick=()=>{page++;drawC()};
+drawN();drawC();ask('a');setInterval(()=>{(!W||W.isActive)&&ask('a')},6000);
+W?.onEvent?.('activated',()=>{ask('a')});W?.ready?.()})();
 </script></body></html>

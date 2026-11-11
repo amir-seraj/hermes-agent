@@ -22,8 +22,10 @@ import yaml
 from hermes_constants import get_hermes_home
 
 _ID = re.compile(r'[A-Za-z0-9_.-]{1,48}')  # session and cron job ids
-_COMMANDS = {'stop': '/stop', 'approve': '/approve', 'deny': '/deny',
-             'restart': '/restart', 'fast': '/fast', 'yolo': '/yolo'}
+_COMMANDS = {'stop': ('/stop', 'Stopping the run.'), 'approve': ('/approve', 'Approved.'),
+             'deny': ('/deny', 'Denied.'), 'restart': ('/restart', 'Restarting the gateway.'),
+             'fast': ('/fast', 'Toggled fast mode.'), 'yolo': ('/yolo', 'Toggled auto-approve.')}
+_PROVIDERS = {'openai-codex': 'Codex', 'anthropic': 'Claude', 'openrouter': 'OpenRouter'}
 _usage = {'at': 0.0, 'value': None, 'task': None}
 
 
@@ -84,7 +86,8 @@ def _refresh_usage(billing):
     snap = fetch_account_usage(billing[0], base_url=billing[1]) if billing else None
     windows = [w for w in (snap.windows if snap else ()) if w.used_percent is not None]
     w = next((w for w in windows if 'week' in w.label.lower()), windows[0] if windows else None)
-    _usage['value'] = w and [_text(f'{snap.provider} · {w.label}', 24), round(w.used_percent),
+    name = _PROVIDERS.get(snap.provider, snap.provider) if snap else ''
+    _usage['value'] = w and [_text(f'{name} {w.label.lower()}', 24), round(w.used_percent),
                              w.reset_at.astimezone().strftime('%a %H:%M') if w.reset_at else '']
 
 
@@ -127,7 +130,8 @@ def _run_job(job_id):
     job = next((j for j in load_jobs() if j.get('id') == job_id), None)
     if not job or not trigger_job(job_id):
         return 'Job not found.'
-    return 'Queued ' + _text(job.get('name') or job_id, 40)
+    return f"Queued {_text(job.get('name') or job_id, 40)}."
+
 
 
 def _runner(adapter):
@@ -159,13 +163,14 @@ async def _answer(adapter, user, chat, data):
         return await asyncio.to_thread(_controls)
     kind, _, arg = data.partition(':')
     if kind == 'k' and arg in _COMMANDS:
-        command = _COMMANDS[arg]
+        command, done = _COMMANDS[arg]
     elif kind == 'r' and _ID.fullmatch(arg):
         title = await asyncio.to_thread(_title, arg)
-        command = title and '/resume ' + title
+        command, done = title and '/resume ' + title, f'Resuming {_text(title, 40)}.'
     elif kind == 'l' and re.fullmatch(r'[0-5]', arg):
         items = _launchers()
-        command = int(arg) < len(items) and '/background ' + items[int(arg)][1]
+        item = items[int(arg)] if int(arg) < len(items) else None
+        command, done = item and '/background ' + item[1], item and f'Started {item[0]}.'
     elif kind == 'j' and _ID.fullmatch(arg):
         return {'t': await asyncio.to_thread(_run_job, arg)}
     else:
@@ -176,7 +181,7 @@ async def _answer(adapter, user, chat, data):
     # shortcut: always targets the main DM session, not a DM topic thread; add thread_id if topics matter.
     await adapter.handle_message(MessageEvent(text=command, message_type=MessageType.COMMAND,
                                               source=_source(adapter, user, chat)))
-    return {'t': 'Sent ' + command.split()[0]}
+    return {'t': done}
 
 
 def enabled():

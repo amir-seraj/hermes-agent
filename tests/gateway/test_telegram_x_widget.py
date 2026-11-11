@@ -32,7 +32,7 @@ def setup(monkeypatch, tmp_path):
     monkeypatch.setenv('HERMES_TELEGRAM_X_WIDGET', '1')
     monkeypatch.setenv('TELEGRAM_ALLOWED_USERS', '123')
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
-    monkeypatch.setattr(widget, '_usage_value', lambda billing: ['openai-codex · Weekly', 42, 'Thu 01:15'])
+    monkeypatch.setattr(widget, '_usage_value', lambda billing: ['Codex weekly', 42, 'Thu 01:15'])
     runner = Runner()
     return SimpleNamespace(_bot=SimpleNamespace(_post=AsyncMock(return_value=True)),
                            _is_callback_user_authorized=lambda *a, **k: True,
@@ -139,7 +139,7 @@ def test_state_idle_with_sessions(setup, tmp_path):
                        ('s3', None, now, None), ('s4', 'Running', now - 30, None)])
     setup.runner._running_agents = {'other': SimpleNamespace(session_id='s4')}
     state = answer(setup)
-    assert state['s'] == 'i' and state['u'] == ['openai-codex · Weekly', 42, 'Thu 01:15']
+    assert state['s'] == 'i' and state['u'] == ['Codex weekly', 42, 'Thu 01:15']
     assert [(r[0], r[2]) for r in state['l']] == [('s4', 'w'), ('s2', 'i'), ('s1', 'd')]
 
 
@@ -165,7 +165,7 @@ def test_state_unavailable_without_db(setup, tmp_path):
 @pytest.mark.parametrize('data,command', [('k:stop', '/stop'), ('k:approve', '/approve'), ('k:deny', '/deny'),
                                           ('k:restart', '/restart'), ('k:fast', '/fast'), ('k:yolo', '/yolo')])
 def test_actions_dispatch_whitelisted_commands(setup, data, command):
-    assert answer(setup, data=data) == {'t': 'Sent ' + command}
+    assert answer(setup, data=data) == {'t': widget._COMMANDS[data[2:]][1]}
     event = setup.handle_message.await_args.args[0]
     assert event.text == command and event.message_type.name == 'COMMAND'
     assert event.source.chat_id == '123' and event.source.user_id == '123' and event.source.chat_type == 'dm'
@@ -173,14 +173,14 @@ def test_actions_dispatch_whitelisted_commands(setup, data, command):
 
 def test_resume_uses_title_from_db(setup, tmp_path):
     make_db(tmp_path, [('s1', 'Deck  redesign', 1, None), ('s2', None, 2, None)])
-    assert answer(setup, data='r:s1') == {'t': 'Sent /resume'}
+    assert answer(setup, data='r:s1') == {'t': 'Resuming Deck redesign.'}
     assert setup.handle_message.await_args.args[0].text == '/resume Deck redesign'
     assert answer(setup, data='r:s2') == {'t': 'No longer available.'}
 
 
 def test_launchers(setup, tmp_path):
     (tmp_path / 'xdeck.yaml').write_text('launchers:\n  - {label: Brief, prompt: "Give me\n\n my brief"}\n  - {label: Bad}\n')
-    assert answer(setup, data='l:0') == {'t': 'Sent /background'}
+    assert answer(setup, data='l:0') == {'t': 'Started Brief.'}
     assert setup.handle_message.await_args.args[0].text == '/background Give me my brief'
     assert answer(setup, data='l:1') == {'t': 'No longer available.'}
 
@@ -206,4 +206,4 @@ def test_usage_picks_weekly_window(monkeypatch):
         usage.AccountUsageWindow('Session', 10.0), usage.AccountUsageWindow('Weekly', 41.6, datetime(2026, 11, 12, tzinfo=timezone.utc))))
     monkeypatch.setattr(usage, 'fetch_account_usage', lambda provider, base_url=None: snap)
     widget._refresh_usage(('openai-codex', None))
-    assert widget._usage['value'][:2] == ['openai-codex · Weekly', 42]
+    assert widget._usage['value'][:2] == ['Codex weekly', 42]
